@@ -1,0 +1,15 @@
+# Path: /HepData/8437/d3-x1-y1
+# v4{SP} (purprle stars)
+# Location: F 1a
+# PT : 0.2 - 5.0 GeV
+# RE : PB PB --> CHARGED X
+# SQRT(S)/NUCLEON : 2760.0 GeV
+# x: CENTRALITY IN PCT
+# y : v4{SP} (purprle stars)
+# x xlow xhigh y dy+ dy-
+ 2.5  2.5  2.5 0.009501 +2.51E-4 -2.51E-4
+ 7.5  7.5  7.5 0.011346 +2.64E-4 -2.64E-4
+15.0 15.0 15.0 0.012642 +2.27E-4 -2.27E-4
+25.0 25.0 25.0 0.014138 +3.07E-4 -3.07E-4
+35.0 35.0 35.0 0.015804 +4.27E-4 -4.27E-4
+45.0 45.0 45.0 0.015339 +7.31E-4 -7.31E-4

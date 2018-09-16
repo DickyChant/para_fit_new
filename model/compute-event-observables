@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+
+import argparse
+import collections
+import itertools
+import sys
+
+import numpy as np
+import h5py
+
+
+identified_particles = [
+    ('pion',   211),
+    ('kaon',   321),
+    ('proton', 2212),
+]
+
+Qn_to_compute = np.array([2, 3, 4])
+
+
+def compute_observables(event):
+    """
+    Compute all observables for a single event.
+
+    """
+    # extract initial condition properties
+    initial_attrs = event['initial'].attrs
+    ic_data = (
+        initial_attrs['mult'],
+        [initial_attrs['e{}'.format(n)] for n in Qn_to_compute]
+    )
+
+    # read in particle data and save as numpy arrays in a dict
+    # for those events that didn't produce any particles, create a dummy dict
+    # that returns empty arrays
+    try:
+        particles_group = event['particles']
+    except KeyError:
+        particle_data = collections.defaultdict(lambda: np.array([]))
+        n_oversamples = 1
+    else:
+        particle_data = {
+            k: np.concatenate([g[k] for g in particles_group.values()])
+            for k in ['ID', 'mass', 'charge', 'pT', 'phi', 'eta']
+        }
+        n_oversamples = len(particles_group)
+
+    # average number of charged particles at midrapidity
+    charged = (particle_data['charge'] != 0)
+    abs_eta = np.fabs(particle_data['eta'])
+    dNch_deta = np.count_nonzero(charged & (abs_eta < 0.5)) / n_oversamples
+
+    # extract some arrays from the dict
+    mass = particle_data['mass']
+    pT = particle_data['pT']
+    abs_ID = np.absolute(particle_data['ID'])
+
+    # mid-rapidity cut (y not eta)
+    pz = pT*np.sinh(particle_data['eta'])
+    energy = np.sqrt(mass*mass + pT*pT + pz*pz)
+    exp2y = (energy + pz)/(energy - pz)
+    midrapidity = (1/np.e < exp2y) & (exp2y < np.e)
+
+    # identified particle data: dN/dy and mean pT
+    def compute_ID_parts_data(i):
+        pT_i = pT[midrapidity & (abs_ID == i)]
+        N = pT_i.size
+
+        if N == 0:
+            return 0., 0.
+        else:
+            return N/n_oversamples, pT_i.mean()
+
+    ID_parts_data = [compute_ID_parts_data(i) for _, i in identified_particles]
+
+    # flow
+    phi = particle_data['phi'][
+        charged & (abs_eta < 1.0) & (0.2 < pT) & (pT < 5.0)
+    ]
+    flow_data = (
+        phi.size,
+        np.exp(np.outer(1j*Qn_to_compute, phi)).sum(axis=1)
+    )
+
+    atlas_phi = particle_data['phi'][charged & (abs_eta < 2.5) & (pT > 0.5)]
+    atlas_flow_data = (
+        atlas_phi.size,
+        np.exp(np.outer(1j*Qn_to_compute, atlas_phi)).sum(axis=1)
+    )
+
+    return ic_data, dNch_deta, ID_parts_data, flow_data, atlas_flow_data
+
+
+def write_observables(events, h5_file):
+    """
+    Write observables from an iterable of events to file.
+
+    """
+    def write_dataset(*args):
+        *path, data = args
+        h5_file.create_dataset('/'.join(path), data=data, compression='lzf')
+
+    ic_data, dNch_deta, ID_parts_data, flow_data, atlas_flow_data = zip(
+        *(compute_observables(e) for e in events)
+    )
+
+    write_dataset('dNch_deta', dNch_deta)
+
+    for name, data in zip(['entropy', 'ecc'], zip(*ic_data)):
+        write_dataset('initial', name, data)
+
+    for (name, _), (dN_dy, mean_pT) in zip(
+            identified_particles,
+            np.array(ID_parts_data).transpose(1, 2, 0)
+    ):
+        write_dataset('dN_dy', name, dN_dy)
+        write_dataset('mean_pT', name, mean_pT)
+
+    for name, data in zip(['M', 'Qn'], zip(*flow_data)):
+        write_dataset('flow', name, data)
+
+    for name, data in zip(['M', 'Qn'], zip(*atlas_flow_data)):
+        write_dataset('atlas_flow', name, data)
+
+
+def get_h5_groups(h5_filename, verbose=False):
+    """
+    Iterate over the groups in HDF5 file, handling exceptions.
+
+    """
+    if verbose:
+        print(h5_filename)
+
+    try:
+        with h5py.File(h5_filename, 'r') as f:
+            yield from f.values()
+    except OSError as e:
+        print('\033[33mwarning: error reading {}:'.format(h5_filename),
+              e, end='\033[0m\n', file=sys.stderr)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='compute event-by-event observables')
+
+    parser.add_argument('--overwrite', action='store_const', const='w',
+                        default='w-', dest='mode',
+                        help='overwrite existing output files')
+    parser.add_argument('--verbose', action='store_true',
+                        help='print filenames to stdout during processing')
+
+    parser.add_argument('event_files', nargs='+', help='HDF5 event files')
+    parser.add_argument('output_file', help='output HDF5 file')
+
+    args = parser.parse_args()
+
+    events = itertools.chain.from_iterable(
+        get_h5_groups(f, verbose=args.verbose) for f in args.event_files
+    )
+
+    with h5py.File(args.output_file, args.mode, libver='latest') as f:
+        write_observables(events, f)
+
+
+if __name__ == "__main__":
+    main()

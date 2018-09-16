@@ -1,0 +1,78 @@
+#!/usr/bin/env python3
+
+""" Convert experimental data files to HDF5. """
+
+import h5py
+import numpy as np
+
+
+experiment = 'alice'
+
+
+def process_nch(f):
+    columns = np.loadtxt('{}_nch.dat'.format(experiment)).T
+
+    centrality = columns[0]
+
+    f['dNch_deta/x'] = centrality
+    f['dNch_deta/y'] = columns[3]
+    f['dNch_deta/yerr'] = columns[4]
+
+    dN_dy_group = f.create_group('dN_dy')
+
+    for name, data in zip(
+            ['pion', 'kaon', 'proton'],
+            np.split(columns[6:], 3)
+    ):
+        g = dN_dy_group.create_group(name)
+        g['x'] = f['dNch_deta/x']
+        g['y'] = data[0] + data[3]
+        g['yerr'] = data[1] + data[4]
+
+
+def process_pt(f):
+    columns = np.loadtxt('{}_pt.dat'.format(experiment)).T
+
+    centrality = columns[0]
+
+    mean_pT_group = f.create_group('mean_pT')
+
+    for name, data in zip(
+            ['pion', 'kaon', 'proton'],
+            np.split(columns[3:], 3)
+    ):
+        g = mean_pT_group.create_group(name)
+
+        if name == 'pion':
+            g['x'] = centrality
+        else:
+            g['x'] = mean_pT_group['pion/x']
+
+        g['y'] = (data[0] + data[3])/2
+        g['yerr'] = (data[1] + data[4])/2
+
+
+def process_vn(f):
+    for n in [2, 3, 4]:
+        # columns = np.concatenate([
+        #     np.loadtxt('{}_v{}_central.dat'.format(experiment, n)),
+        #     np.loadtxt('{}_v{}_minbias.dat'.format(experiment, n))[1:],
+        # ]).T
+        # not yet enough stats for small bins
+        columns = np.loadtxt('{}_v{}_minbias.dat'.format(experiment, n)).T
+
+        g = f.create_group('vn/{}'.format(n))
+        g['x'] = columns[0]
+        g['y'] = columns[3]
+        g['yerr'] = columns[4]
+
+
+def main():
+    with h5py.File('data.hdf', 'w') as f:
+        process_nch(f)
+        process_pt(f)
+        process_vn(f)
+
+
+if __name__ == "__main__":
+    main()

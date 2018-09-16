@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+
+"""
+Generates a Latin-hypercube design, outputs an HDF5 file, and writes input
+files for the heavy-ion-collisions-osg workflow.
+
+Must have R with package 'lhs'.
+"""
+
+import argparse
+import os
+import subprocess
+
+import numpy as np
+import h5py
+import scipy.interpolate as interp
+
+
+def generate_design(npoints, ndim, low=None, high=None,
+                    seed=np.random.randint(2**30)):
+    """
+    Call R to generate a maximin LHS design.
+
+    """
+    output = subprocess.check_output(
+        ['R', '--slave'],
+        input="""
+        library('lhs')
+        set.seed({})
+        write.table(maximinLHS({}, {}), col.names=FALSE, row.names=FALSE)
+        """.format(seed, npoints, ndim).encode(),
+    )
+
+    lhs = np.array([l.split() for l in output.splitlines()], dtype=float)
+
+    if low is None and high is None:
+        return lhs
+
+    # rescale hypercube to requested range
+    low = np.zeros(ndim) if low is None else np.asarray(low)
+    high = np.ones(ndim) if high is None else np.asarray(high)
+
+    return lhs*(high - low) + low
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='create the Latin-hypercube design'
+    )
+
+    parser.add_argument('--output-file', help='HDF5 output file')
+    parser.add_argument('--eos', help='path to vishnew EOS table')
+    parser.add_argument('--inputfile-dir',
+                        help='directory to place OSG input files')
+
+    args = parser.parse_args()
+
+    if args.output_file is None and args.inputfile_dir is None:
+        parser.print_help()
+        return
+
+    if args.inputfile_dir is not None and args.eos is None:
+        print('generating input files requires the EOS table')
+        return
+
+    # define design parameters
+    #    label                    key        low    high   guess
+    design_params = [
+        (r'norm',                'norm',     100.0, 250.0, 180.0),
+        (r'$p$',                 'p',         -1.0,   1.0,   0.0),
+        (r'$k$',                 'k',          0.8,   2.2,   1.4),
+        (r'$w$',                 'w',          0.4,   1.0,   0.6),
+        (r'$\eta/s$ hrg',        'etas_hrg',   0.3,   1.0,   0.5),
+        (r'$\eta/s$ min',        'etas_min',   0.0,   0.3,   0.1),
+        (r'$\eta/s$ slope',      'etas_slope', 0.0,   2.0,   1.0),
+        (r'$\zeta/s$ norm',      'zetas_norm', 0.0,   2.0,   0.5),
+        (r'$T_\mathrm{switch}$', 'T_switch',   0.135, 0.165, 0.150),
+    ]
+
+    zip_params = zip(*design_params)
+    labels = list(next(zip_params))
+    keys = list(next(zip_params))
+    low, high, guess = map(np.array, zip_params)
+    ndim = len(design_params)
+
+    # create dict of main and validation designs
+    design = {
+        name: generate_design(npoints, ndim, low=low, high=high, seed=seed)
+        for (name, npoints, seed) in [
+            ('main',      300, 716535127),
+            ('validation', 50, 219473425),
+        ]
+    }
+
+    # sort the main design by normalized distance from the guess point
+    # this way better points will in general run earlier
+    design['main'] = design['main'][
+        np.square((design['main'] - guess)/(high - low)).sum(axis=1).argsort()
+    ]
+
+    # write HDF5 file
+    if args.output_file:
+        with h5py.File(args.output_file, 'w') as f:
+            g = f.create_group('design')
+            for name, data in design.items():
+                g.create_dataset(name, data=data)
+
+            f.create_dataset('range', data=np.column_stack([low, high]))
+            d = f.create_dataset('labels', shape=(len(labels),),
+                                 dtype=h5py.special_dtype(vlen=str))
+            d[:] = labels
+
+    # write OSG input files
+    if args.inputfile_dir:
+        eos = np.loadtxt(args.eos)
+        T_to_e = interp.InterpolatedUnivariateSpline(eos[:, 3], eos[:, 0])
+
+        file_template = ''.join(
+            '{} = {}\n'.format(key, ' '.join(args)) for (key, *args) in
+            [[
+                'trento_args',
+                '--normalization {norm}',
+                '--reduced-thickness {p}',
+                '--fluctuation {k}',
+                '--nucleon-width {w}',
+            ], [
+                'vishnew_args',
+                'etas_hrg={etas_hrg}',
+                'etas={etas_min}',
+                'etas_slope={etas_slope}',
+                'visbulknorm={zetas_norm}',
+                'edec={e_switch}',
+            ]]
+        )
+
+        for name, array in design.items():
+            destdir = os.path.join(args.inputfile_dir, name)
+            os.makedirs(destdir, exist_ok=True)
+
+            ndigits = int(np.log10(array.shape[0]) + 1)
+            path_template = os.path.join(destdir, '{:0' + str(ndigits) + 'd}')
+
+            for n, row in enumerate(array):
+                with open(path_template.format(n), 'w') as f:
+                    params = dict(zip(keys, row))
+                    params['e_switch'] = T_to_e(params['T_switch'])
+                    f.write(file_template.format(**params))
+
+
+if __name__ == "__main__":
+    main()

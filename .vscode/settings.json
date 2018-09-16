@@ -1,3 +1,4 @@
 {
-    "python.jediEnabled": false
+    "python.jediEnabled": false,
+    "python.pythonPath": "/Users/dickie/anaconda3/envs/tensorflow/bin/python"
 }
